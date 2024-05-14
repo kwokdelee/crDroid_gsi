@@ -31,7 +31,7 @@ jobs:
 
     - name: Initialize local repository
       run: |
-        cd crDroid
+        cd 14
         repo init -u https://github.com/crdroidandroid/android.git -b 14.0
 
     - name: Clone treble_manifest
