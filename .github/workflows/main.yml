@@ -1,0 +1,104 @@
+name: crDroid GSI Build and OTA Generation
+
+on:
+  schedule:
+    - cron: '0 0 * * 6' # Runs every Saturday at midnight
+  workflow_dispatch:
+
+jobs:
+  build-gsi:
+    runs-on: ubuntu-latest
+    name: Build crDroid GSI
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+      with:
+        repository: 'kwokdelee/treble_manifest'
+        path: 'crDroid'
+
+    - name: Set up environment
+      run: |
+        sudo apt-get update && sudo apt-get install -y repo
+        mkdir -p ~/bin
+        PATH=~/bin:$PATH
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+rx ~/bin/repo
+        echo "PATH=~/bin:$PATH" >> $GITHUB_ENV
+        echo "USE_CCACHE=1" >> $GITHUB_ENV
+        echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
+        echo "CCACHE_MAXSIZE=50G" >> $GITHUB_ENV
+
+    - name: Initialize local repository
+      run: |
+        cd crDroid
+        repo init -u https://github.com/crdroidandroid/android.git -b 14.0
+
+    - name: Clone treble_manifest
+      run: |
+        git clone https://github.com/naz664/treble_manifest.git .repo/local_manifests -b 14
+
+    - name: Sync the source
+      run: |
+        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+
+    - name: Apply patches
+      run: |
+        cp -r patches rom
+        cd rom
+        bash patches/apply-patches.sh .
+
+    - name: Generate Rom Makefile
+      run: |
+        cd device/phh/treble
+        bash generate.sh crDroid
+
+    - name: Compile system image
+      run: |
+        . build/envsetup.sh
+        ccache -M 50G -F 0
+        lunch treble_arm64_bgN-userdebug
+        make systemimage -j$(nproc --all)
+
+    - name: Compress system image
+      run: |
+        cd out/target/product/tdgsi_arm64_ab
+        xz -z -k system.img
+
+    - name: Upload system image
+      uses: actions/upload-artifact@v4
+      with:
+        name: crDroid-GSI
+        path: out/target/product/tdgsi_arm64_ab/system.img.xz
+
+    - name: Generate OTA JSON
+      run: |
+        cd out/target/product/tdgsi_arm64_ab
+        VERSION="v$(date +%Y.%m.%d)"
+        DATE="$(date +%s)"
+        JSON_FILE="$GITHUB_WORKSPACE/crDroid/ota.json"
+        echo "{" > $JSON_FILE
+        echo "  \"version\": \"$VERSION\"," >> $JSON_FILE
+        echo "  \"date\": \"$DATE\"," >> $JSON_FILE
+        echo "  \"variants\": [" >> $JSON_FILE
+        for FILE in *.xz; do
+          SIZE=$(stat -c%s "$FILE")
+          NAME=$(echo $FILE | sed -e 's/.img.xz//')
+          URL="https://github.com/your-username/treble_manifest/releases/download/$VERSION/$FILE"
+          echo "    {" >> $JSON_FILE
+          echo "      \"name\": \"$NAME\"," >> $JSON_FILE
+          echo "      \"size\": \"$SIZE\"," >> $JSON_FILE
+          echo "      \"url\": \"$URL\"" >> $JSON_FILE
+          echo "    }," >> $JSON_FILE
+        done
+        # Remove last comma
+        sed -i '$ s/,$//' $JSON_FILE
+        echo "  ]" >> $JSON_FILE
+        echo "}" >> $JSON_FILE
+
+    - name: Upload OTA JSON
+      uses: actions/upload-artifact@v4
+      with:
+        name: OTA JSON
+        path: crDroid/ota.json
+        
